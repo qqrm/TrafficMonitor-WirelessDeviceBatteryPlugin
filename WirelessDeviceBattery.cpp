@@ -7,6 +7,7 @@
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "lib\\x64\\wireless_battery.lib")
 #pragma comment(lib, "ntdll.lib")
+#pragma comment(lib, "synchronization.lib")
 #include <vector>
 #include <string>
 
