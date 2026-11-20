@@ -1,0 +1,57 @@
+name: ci-gate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up MSVC x64
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+
+      - name: Static acceptance checks
+        shell: pwsh
+        run: ./scripts/check-static.ps1
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@bcfb9cce635345aac9996cedc19b2de8e01b894f # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install workflow linters
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
+        with:
+          tool: actionlint
+
+      - name: actionlint
+        shell: pwsh
+        run: actionlint
+
+      - name: Install zizmor
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
+        with:
+          tool: zizmor
+
+      - name: zizmor
+        shell: pwsh
+        run: zizmor --min-severity medium .
+
+      - name: Build Release x64
+        shell: pwsh
+        run: msbuild WirelessDeviceBattery.vcxproj /p:Configuration=Release /p:Platform=x64 /p:TreatWarningsAsErrors=true
+
+      - name: Verify artifact
+        shell: pwsh
+        run: |
+          if (-not (Test-Path bin/x64/Release/WirelessDeviceBattery.dll)) { throw 'DLL missing' }
+          Get-FileHash bin/x64/Release/WirelessDeviceBattery.dll -Algorithm SHA256 | Format-List
