@@ -13,6 +13,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up MSVC x64
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
@@ -23,10 +26,20 @@ jobs:
         shell: pwsh
         run: ./scripts/check-static.ps1
 
-      - name: Secret scan
-        uses: gitleaks/gitleaks-action@bcfb9cce635345aac9996cedc19b2de8e01b894f # v2
+      - name: Secret scan (gitleaks)
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP gitleaks.zip
+          Invoke-WebRequest -Uri "https://github.com/gitleaks/gitleaks/releases/download/v$env:GITLEAKS_VERSION/gitleaks_$env:GITLEAKS_VERSION`_windows_x64.zip" -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:GITLEAKS_SHA256.ToLowerInvariant()) { throw "gitleaks checksum mismatch: $actual" }
+          $dest = Join-Path $env:RUNNER_TEMP gitleaks-bin
+          Expand-Archive $archive -DestinationPath $dest -Force
+          $bin = Join-Path $dest gitleaks.exe
+          & $bin git --no-banner --redact=100 --exit-code=2 --report-format=json --report-path (Join-Path $env:RUNNER_TEMP gitleaks-report.json)
 
       - name: Install workflow linters
         uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2
