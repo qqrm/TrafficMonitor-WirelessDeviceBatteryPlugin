@@ -93,6 +93,13 @@ const DeviceSnapshot* CWirelessDeviceBattery::GetDevice(size_t index) const
 
 size_t CWirelessDeviceBattery::DeviceCount() const { return VisibleCount(); }
 
+const BatteryHistory* CWirelessDeviceBattery::GetHistory(const std::wstring& key) const
+{
+    std::lock_guard<std::mutex> lock(m_snapshot_mutex);
+    auto it = m_snapshot.histories.find(key);
+    return it == m_snapshot.histories.end() ? nullptr : &it->second;
+}
+
 void CWirelessDeviceBattery::ApplyOptions(const SettingData& data)
 {
     m_setting_data = data;
@@ -338,6 +345,15 @@ void CWirelessDeviceBattery::FetchData()
         snap.devices.push_back(std::move(d));
     }
     snap.available = true;
+    {
+        std::lock_guard<std::mutex> lock(m_snapshot_mutex);
+        snap.histories = m_snapshot.histories;   // preserve per-device history
+    }
+    {
+        time_t now = time(nullptr);
+        for (const auto& d : snap.devices)
+            snap.histories[d.key].Add(static_cast<long long>(now), d.percent);
+    }
     PublishSnapshot(std::move(snap));
 }
 

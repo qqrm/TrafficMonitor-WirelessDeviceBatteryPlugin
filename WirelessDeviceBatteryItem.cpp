@@ -6,6 +6,7 @@
 #include "LogitechMark.h"
 #include <algorithm>
 #include <cmath>
+#include "BatteryHistory.h"
 
 namespace {
     constexpr COLORREF CRIMSON = RGB(220, 38, 38);
@@ -112,6 +113,35 @@ void CWirelessDeviceBatteryItem::DrawItem(void* hDC, int x, int y, int w, int h,
     int barW = w - markSize - 10;
     int barH = ((h - 12) / 2) > 3 ? ((h - 12) / 2) : 3;
     int barY = y + 2;
+
+    // Real-time charge sparkline (4h window), same translucent style as the
+    // agent-limit cards. The filled area uses the brand color (crimson when low).
+    const BatteryHistory* hist = g_plugin.GetHistory(d->key);
+    if (hist && barW > 8 && barH > 2)
+    {
+        auto points = hist->Window(time(nullptr), BatteryHistory::kWindowSeconds);
+        if (points.size() >= 2)
+        {
+            const long long newest = points.back().timestamp_unix_seconds;
+            const long long oldest = points.front().timestamp_unix_seconds;
+            const double span = static_cast<double>((newest > oldest ? newest - oldest : 1));
+            std::vector<POINT> poly;
+            poly.reserve(points.size() + 2);
+            poly.push_back({ barX, barY + barH });
+            for (const auto& pt : points)
+            {
+                double t = static_cast<double>(pt.timestamp_unix_seconds - oldest) / span;
+                if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+                int px = barX + static_cast<int>((barW - 1) * t + 0.5);
+                int py = barY + barH - static_cast<int>((barH - 1) * (pt.percent / 100.0) + 0.5);
+                if (py < barY) py = barY;
+                poly.push_back({ px, py });
+            }
+            poly.push_back({ barX + barW - 1, barY + barH });
+            DrawTranslucentPolygon(pDC, CRect(barX, barY, barX + barW, barY + barH + 1),
+                                   poly, color, 200);
+        }
+    }
     DrawTranslucentRect(pDC, CRect(barX, barY, barX + barW, barY + barH),
                         RGB(128, 128, 128), 48);
     int pct = d->percent < 0 ? 0 : (d->percent > 100 ? 100 : d->percent);

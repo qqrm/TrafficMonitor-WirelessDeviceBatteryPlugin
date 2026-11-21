@@ -5,6 +5,8 @@
 #include <vector>
 #include <map>
 #include <mutex>
+#include <unordered_map>
+#include "BatteryHistory.h"
 
 #define g_plugin CWirelessDeviceBattery::Instance()
 
@@ -30,6 +32,7 @@ struct DeviceSnapshot
 struct BatterySnapshot
 {
     std::vector<DeviceSnapshot> devices;
+    std::unordered_map<std::wstring, BatteryHistory> histories;
     std::wstring tooltip;
     bool available{};
 };
@@ -62,7 +65,8 @@ public:
 
     // Snapshot access (thread-safe).
     BatterySnapshot GetSnapshot() const;
-    const DeviceSnapshot* GetDevice(size_t index) const;   // nullptr if hidden/out of range
+    const DeviceSnapshot* GetDevice(size_t index) const;
+    const BatteryHistory* GetHistory(const std::wstring& key) const;   // nullptr if hidden/out of range
     size_t DeviceCount() const;
     bool IsAvailable() const;
     const std::wstring& ConfigPath() const { return m_config_path; }
