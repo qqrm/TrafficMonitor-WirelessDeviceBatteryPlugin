@@ -2,24 +2,39 @@
 #include "PluginInterface.h"
 #include "WirelessDeviceBatteryItem.h"
 #include <string>
+#include <vector>
 #include <map>
 #include <mutex>
+#include <unordered_map>
+#include "BatteryHistory.h"
 
 #define g_plugin CWirelessDeviceBattery::Instance()
 
 struct SettingData
 {
+    std::vector<std::wstring> hidden_keys;   // VID:PID or stable keys to hide
+    bool show_unknown{true};
+    bool show_charging{true};
+};
+
+struct DeviceSnapshot
+{
+    std::wstring key;
+    std::wstring name;
+    std::wstring via;
+    int percent{-1};                 // -1 = unknown, never 0
+    bool charging{};
+    bool asleep{};
+    bool connected{};
+    int brand{};                     // index into BrandAssets
 };
 
 struct BatterySnapshot
 {
-    int percent{};
-    bool available{};
-    bool asleep{};
-    bool connected{};
-    std::wstring value;
+    std::vector<DeviceSnapshot> devices;
+    std::unordered_map<std::wstring, BatteryHistory> histories;
     std::wstring tooltip;
-    std::wstring name;
+    bool available{};
 };
 
 class CWirelessDeviceBattery : public ITMPlugin
@@ -43,21 +58,24 @@ public:
     void SaveConfig() const;
     const CString& StringRes(UINT id);
     HICON GetIcon(UINT id);
-    int DPI(int pixel);
+    int DPI(int pixel) const;
+    bool IsVisible(const std::wstring& key) const;
 
     SettingData m_setting_data;
 
-    // Thread-safe accessors. Return pointers into thread-local storage so the
-    // caller (UI thread) never observes a partially updated std::wstring.
-    const wchar_t* GetValue() const;
-    const wchar_t* GetName() const;
-    const wchar_t* GetTooltip() const;
-    int GetPercent() const;
+    // Snapshot access (thread-safe).
+    BatterySnapshot GetSnapshot() const;
+    const DeviceSnapshot* GetDevice(size_t index) const;
+    const BatteryHistory* GetHistory(const std::wstring& key) const;   // nullptr if hidden/out of range
+    size_t DeviceCount() const;
     bool IsAvailable() const;
+    const std::wstring& ConfigPath() const { return m_config_path; }
+    void ApplyOptions(const SettingData& data);
+    void RefreshDevices();   // force poll for the options dialog
 
 private:
     static CWirelessDeviceBattery m_instance;
-    CWirelessDeviceBatteryItem m_item;
+    std::vector<CWirelessDeviceBatteryItem> m_items;
 
     mutable std::mutex m_snapshot_mutex;
     BatterySnapshot m_snapshot;
@@ -71,6 +89,7 @@ private:
 
     void FetchData();
     void PublishSnapshot(BatterySnapshot snapshot);
+    size_t VisibleCount() const;
 };
 
 #ifdef __cplusplus

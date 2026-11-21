@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 #include "LogitechMark.h"
 
 class DibSurface
@@ -84,5 +85,38 @@ inline void DrawLogitechMark(CDC* pDC, const CRect& rect, COLORREF color)
     if (!surface.IsValid()) return;
     for (int i = 0; i < LOGO_MARK_SIZE * LOGO_MARK_SIZE; ++i)
         surface.Pixels()[i] = PremultipliedPixel(color, LOGO_MARK_ALPHA[i]);
+    BlendSurface(pDC, rect, surface);
+}
+// Draw a filled translucent polygon with 4x alpha-mask antialiasing.
+// Mirrors DrawTranslucentPolygon in better-trafficmonitor-ai-usage-plugin.
+inline void DrawTranslucentPolygon(CDC* pDC, const CRect& rect,
+    const std::vector<POINT>& points, COLORREF color, uint8_t opacity)
+{
+    if (!pDC || rect.IsRectEmpty() || points.size() < 3 || opacity == 0) return;
+    constexpr int SCALE = 4;
+    DibSurface mask(pDC->GetSafeHdc(), rect.Width() * SCALE, rect.Height() * SCALE);
+    DibSurface surface(pDC->GetSafeHdc(), rect.Width(), rect.Height());
+    if (!mask.IsValid() || !surface.IsValid()) return;
+
+    std::vector<POINT> scaled;
+    scaled.reserve(points.size());
+    for (const POINT& p : points)
+        scaled.push_back({ (p.x - rect.left) * SCALE, (p.y - rect.top) * SCALE });
+    HRGN region = CreatePolygonRgn(scaled.data(), static_cast<int>(scaled.size()), WINDING);
+    HBRUSH brush = CreateSolidBrush(RGB(255, 255, 255));
+    if (region && brush) FillRgn(mask.Dc(), region, brush);
+    if (brush) DeleteObject(brush);
+    if (region) DeleteObject(region);
+
+    const uint32_t pixel = PremultipliedPixel(color, opacity);
+    uint32_t* dest = surface.Pixels();
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(mask.Pixels());
+    const int count = surface.Width() * surface.Height();
+    for (int i = 0; i < count; ++i)
+    {
+        const uint8_t alpha = static_cast<uint8_t>(src[i] & 0xFF);
+        if (alpha == 0) { dest[i] = 0; continue; }
+        dest[i] = PremultipliedPixel(color, static_cast<uint8_t>((opacity * alpha) / 255));
+    }
     BlendSurface(pDC, rect, surface);
 }

@@ -17,4 +17,8 @@ Wireless.*/
 *.idb
 *.sdf
 *.opensdf
-.vs/
+.vs/add_*.py
+fix*.py
+*.pch
+*.ipdb
+*.iobj

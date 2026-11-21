@@ -3,19 +3,22 @@
 #include "OptionsDlg.h"
 #include "wireless_battery_ffi.h"
 #include <gdiplus.h>
-#include <sstream>
 #pragma comment(lib, "gdiplus.lib")
-#pragma comment(lib, "lib\\x64\\wireless_battery.lib")
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "synchronization.lib")
-#include <vector>
-#include <string>
+#pragma comment(lib, "lib\\x64\\wireless_battery.lib")
+#include <sstream>
+#include <algorithm>
+#include <fstream>
+#include <ctime>
 
-/////////////////////////////////////////////////////////////////////////////////////////////////
+
 CWirelessDeviceBattery CWirelessDeviceBattery::m_instance;
 
 CWirelessDeviceBattery::CWirelessDeviceBattery()
+    : m_items{}
 {
+    for (int i = 0; i < 16; ++i) m_items.emplace_back(i);
 }
 
 CWirelessDeviceBattery::~CWirelessDeviceBattery()
@@ -23,38 +26,26 @@ CWirelessDeviceBattery::~CWirelessDeviceBattery()
     for (auto& kv : m_icons)
         if (kv.second) DestroyIcon(kv.second);
     m_icons.clear();
-    if (m_gdiplus_token)
-        Gdiplus::GdiplusShutdown(m_gdiplus_token);
+    if (m_gdiplus_token) Gdiplus::GdiplusShutdown(m_gdiplus_token);
     SaveConfig();
 }
 
-CWirelessDeviceBattery& CWirelessDeviceBattery::Instance()
-{
-    return m_instance;
-}
+CWirelessDeviceBattery& CWirelessDeviceBattery::Instance() { return m_instance; }
 
 IPluginItem* CWirelessDeviceBattery::GetItem(int index)
 {
-    switch (index)
-    {
-    case 0:
-        return &m_item;
-    default:
-        break;
-    }
-    return nullptr;
+    if (index < 0) return nullptr;
+    size_t n = DeviceCount();
+    if (size_t(index) >= n || size_t(index) >= m_items.size()) return nullptr;
+    return &m_items[size_t(index)];
 }
 
-const wchar_t* CWirelessDeviceBattery::GetTooltipInfo()
-{
-    return GetTooltip();
-}
+const wchar_t* CWirelessDeviceBattery::GetTooltipInfo() { return GetSnapshot().tooltip.c_str(); }
 
 void CWirelessDeviceBattery::DataRequired()
 {
     DWORD now = GetTickCount();
-    if (m_last_update != 0 && (now - m_last_update) < 60000)
-        return;
+    if (m_last_update != 0 && (now - m_last_update) < 60000) return;
     FetchData();
     m_last_update = now;
 }
@@ -65,77 +56,89 @@ void CWirelessDeviceBattery::PublishSnapshot(BatterySnapshot snapshot)
     m_snapshot = std::move(snapshot);
 }
 
-const wchar_t* CWirelessDeviceBattery::GetValue() const
+BatterySnapshot CWirelessDeviceBattery::GetSnapshot() const
 {
-    static thread_local std::wstring cache;
     std::lock_guard<std::mutex> lock(m_snapshot_mutex);
-    cache = m_snapshot.value;
-    return cache.c_str();
+    return m_snapshot;
 }
 
-const wchar_t* CWirelessDeviceBattery::GetName() const
+bool CWirelessDeviceBattery::IsVisible(const std::wstring& key) const
 {
-    static thread_local std::wstring cache;
-    std::lock_guard<std::mutex> lock(m_snapshot_mutex);
-    cache = m_snapshot.name;
-    return cache.c_str();
+    return std::find(m_setting_data.hidden_keys.begin(), m_setting_data.hidden_keys.end(), key)
+           == m_setting_data.hidden_keys.end();
 }
 
-const wchar_t* CWirelessDeviceBattery::GetTooltip() const
+size_t CWirelessDeviceBattery::VisibleCount() const
 {
-    static thread_local std::wstring cache;
-    std::lock_guard<std::mutex> lock(m_snapshot_mutex);
-    cache = m_snapshot.tooltip;
-    return cache.c_str();
+    size_t n = 0;
+    for (const auto& d : m_snapshot.devices)
+        if (IsVisible(d.key)
+            && (m_setting_data.show_unknown || d.percent >= 0)
+            && (m_setting_data.show_charging || !d.charging)) ++n;
+    return n;
 }
 
-int CWirelessDeviceBattery::GetPercent() const
+const DeviceSnapshot* CWirelessDeviceBattery::GetDevice(size_t index) const
 {
     std::lock_guard<std::mutex> lock(m_snapshot_mutex);
-    return m_snapshot.percent;
+    size_t n = 0;
+    for (const auto& d : m_snapshot.devices) {
+        if (!IsVisible(d.key)) continue;
+        if (!m_setting_data.show_unknown && d.percent < 0) continue;
+        if (!m_setting_data.show_charging && d.charging) continue;
+        if (n++ == index) return &d;
+    }
+    return nullptr;
 }
 
-bool CWirelessDeviceBattery::IsAvailable() const
+size_t CWirelessDeviceBattery::DeviceCount() const { return VisibleCount(); }
+
+const BatteryHistory* CWirelessDeviceBattery::GetHistory(const std::wstring& key) const
 {
     std::lock_guard<std::mutex> lock(m_snapshot_mutex);
-    return m_snapshot.available;
+    auto it = m_snapshot.histories.find(key);
+    return it == m_snapshot.histories.end() ? nullptr : &it->second;
+}
+
+void CWirelessDeviceBattery::ApplyOptions(const SettingData& data)
+{
+    m_setting_data = data;
+    SaveConfig();
+}
+
+void CWirelessDeviceBattery::RefreshDevices()
+{
+    m_last_update = 0;
+    FetchData();
 }
 
 ITMPlugin::OptionReturn CWirelessDeviceBattery::ShowOptionsDialog(void* hParent)
 {
     AFX_MANAGE_STATE(AfxGetStaticModuleState());
+    RefreshDevices();
     CWnd* pParent = CWnd::FromHandle((HWND)hParent);
     COptionsDlg dlg(pParent);
     dlg.m_data = m_setting_data;
-    if (dlg.DoModal() == IDOK)
-    {
-        m_setting_data = dlg.m_data;
-        SaveConfig();
-        return ITMPlugin::OR_OPTION_CHANGED;
+    dlg.m_snapshot = GetSnapshot();
+    if (dlg.DoModal() == IDOK) {
+        ApplyOptions(dlg.m_data);
+        return OR_OPTION_CHANGED;
     }
-    return ITMPlugin::OR_OPTION_UNCHANGED;
+    return OR_OPTION_UNCHANGED;
 }
 
 const wchar_t* CWirelessDeviceBattery::GetInfo(PluginInfoIndex index)
 {
     static thread_local CString str;
-    switch (index)
-    {
-    case TMI_NAME:
-        return StringRes(IDS_PLUGIN_NAME).GetString();
-    case TMI_DESCRIPTION:
-        return StringRes(IDS_PLUGIN_DESCRIPTION).GetString();
-    case TMI_AUTHOR:
-        return L"qqrm";
-    case TMI_COPYRIGHT:
-        return L"Copyright (C) 2026 qqrm";
+    switch (index) {
+    case TMI_NAME: return StringRes(IDS_PLUGIN_NAME).GetString();
+    case TMI_DESCRIPTION: return StringRes(IDS_PLUGIN_DESCRIPTION).GetString();
+    case TMI_AUTHOR: return L"Alexey Belikov";
+    case TMI_COPYRIGHT: return L"GPL-3.0-or-later";
     case ITMPlugin::TMI_URL:
         return L"https://github.com/qqrm/TrafficMonitor-WirelessDeviceBatteryPlugin";
-        break;
-    case TMI_VERSION:
-        return L"1.0.0";
-    default:
-        break;
+    case TMI_VERSION: return L"1.1.0";
+    default: break;
     }
     return L"";
 }
@@ -149,58 +152,71 @@ void CWirelessDeviceBattery::OnInitialize(ITrafficMonitor* pApp)
     LoadConfig(config_dir);
 }
 
-void* CWirelessDeviceBattery::GetPluginIcon()
-{
-    return GetIcon(IDI_ICON1);
-}
+void* CWirelessDeviceBattery::GetPluginIcon() { return GetIcon(IDI_ICON1); }
 
 void CWirelessDeviceBattery::LoadConfig(const std::wstring& config_dir)
 {
-    m_config_path = config_dir + L"KeyboardIndicator.ini";
+    m_config_path = config_dir + L"WirelessDeviceBattery.ini";
+    m_setting_data = SettingData{};
+    std::wifstream in(m_config_path);
+    if (!in) return;
+    std::wstring line;
+    bool in_section = false;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == L'\r') line.pop_back();
+        if (line == L"[devices]") { in_section = true; continue; }
+        if (!line.empty() && line.front() == L'[') { in_section = false; continue; }
+        auto eq = line.find(L'=');
+        if (eq == std::wstring::npos) continue;
+        std::wstring k = line.substr(0, eq), v = line.substr(eq + 1);
+        if (in_section && k == L"hidden") {
+            std::wstringstream ss(v);
+            std::wstring key;
+            while (std::getline(ss, key, L',')) if (!key.empty()) m_setting_data.hidden_keys.push_back(key);
+        } else if (k == L"show_unknown") m_setting_data.show_unknown = (v == L"1" || v == L"true");
+        else if (k == L"show_charging") m_setting_data.show_charging = (v == L"1" || v == L"true");
     }
+}
 
 void CWirelessDeviceBattery::SaveConfig() const
 {
+    if (m_config_path.empty()) return;
+    std::wofstream out(m_config_path, std::ios::trunc);
+    out << L"[general]\n";
+    out << L"show_unknown=" << (m_setting_data.show_unknown ? L"1" : L"0") << L"\n";
+    out << L"show_charging=" << (m_setting_data.show_charging ? L"1" : L"0") << L"\n";
+    out << L"[devices]\n";
+    out << L"hidden=";
+    for (size_t i = 0; i < m_setting_data.hidden_keys.size(); ++i) {
+        if (i) out << L",";
+        out << m_setting_data.hidden_keys[i];
     }
+    out << L"\n";
+}
 
 const CString& CWirelessDeviceBattery::StringRes(UINT id)
 {
     auto iter = m_string_table.find(id);
-    if (iter != m_string_table.end())
-    {
-        return iter->second;
-    }
-    else
-    {
-        AFX_MANAGE_STATE(AfxGetStaticModuleState());
-        m_string_table[id].LoadString(id);
-        return m_string_table[id];
-    }
+    if (iter != m_string_table.end()) return iter->second;
+    AFX_MANAGE_STATE(AfxGetStaticModuleState());
+    m_string_table[id].LoadString(id);
+    return m_string_table[id];
 }
 
 HICON CWirelessDeviceBattery::GetIcon(UINT id)
 {
     auto iter = m_icons.find(id);
-    if (iter != m_icons.end())
-    {
-        return iter->second;
-    }
-    else
-    {
-        AFX_MANAGE_STATE(AfxGetStaticModuleState());
-        HICON hIcon = (HICON)LoadImage(AfxGetInstanceHandle(), MAKEINTRESOURCE(id), IMAGE_ICON, DPI(16), DPI(16), 0);
-        m_icons[id] = hIcon;
-        return hIcon;
-    }
+    if (iter != m_icons.end()) return iter->second;
+    AFX_MANAGE_STATE(AfxGetStaticModuleState());
+    HICON hIcon = (HICON)LoadImage(AfxGetInstanceHandle(), MAKEINTRESOURCE(id),
+                                   IMAGE_ICON, DPI(16), DPI(16), 0);
+    m_icons[id] = hIcon;
+    return hIcon;
 }
 
-int CWirelessDeviceBattery::DPI(int pixel)
+int CWirelessDeviceBattery::DPI(int pixel) const
 {
-    if (m_app != nullptr)
-    {
-        int dpi = m_app->GetDPI(ITrafficMonitor::DPI_TASKBAR);
-        return dpi * pixel / 96;
-    }
+    if (m_app != nullptr) return m_app->GetDPI(ITrafficMonitor::DPI_TASKBAR) * pixel / 96;
     return pixel;
 }
 
@@ -231,15 +247,16 @@ static int ExtractInt(const std::wstring& obj, const std::wstring& key)
 {
     std::wstring search = L"\"" + key + L"\"";
     size_t k = obj.find(search);
-    if (k == std::wstring::npos) return 0;
+    if (k == std::wstring::npos) return -1;
     size_t colon = obj.find(L':', k);
-    if (colon == std::wstring::npos) return 0;
+    if (colon == std::wstring::npos) return -1;
     size_t i = colon + 1;
-    while (i < obj.size() && (obj[i] == L' ' || obj[i] == L'\t')) i++;
+    while (i < obj.size() && (obj[i] == L' ' || obj[i] == L'\t')) ++i;
+    if (i < obj.size() && obj[i] == L'n') return -1;   // null
     int sign = 1;
-    if (i < obj.size() && obj[i] == L'-') { sign = -1; i++; }
+    if (i < obj.size() && obj[i] == L'-') { sign = -1; ++i; }
     int val = 0;
-    while (i < obj.size() && obj[i] >= L'0' && obj[i] <= L'9') { val = val * 10 + (obj[i] - L'0'); i++; }
+    while (i < obj.size() && obj[i] >= L'0' && obj[i] <= L'9') { val = val * 10 + (obj[i] - L'0'); ++i; }
     return val * sign;
 }
 
@@ -251,32 +268,44 @@ static bool ExtractBool(const std::wstring& obj, const std::wstring& key)
     size_t colon = obj.find(L':', k);
     if (colon == std::wstring::npos) return false;
     size_t i = colon + 1;
-    while (i < obj.size() && (obj[i] == L' ' || obj[i] == L'\t')) i++;
+    while (i < obj.size() && (obj[i] == L' ' || obj[i] == L'\t')) ++i;
     return obj.compare(i, 4, L"true") == 0;
+}
+
+static int BrandOf(const std::wstring& name, const std::wstring& via, unsigned vid)
+{
+    std::wstring n = name;
+    std::transform(n.begin(), n.end(), n.begin(), [](wchar_t c) { return towlower(c); });
+    if (n.find(L"logitech") != std::wstring::npos || n.find(L"mx ") != std::wstring::npos) return 0;
+    if (n.find(L"razer") != std::wstring::npos) return 1;
+    if (n.find(L"keychron") != std::wstring::npos) return 2;
+    if (n.find(L"flydigi") != std::wstring::npos || n.find(L"apex") != std::wstring::npos) return 3;
+    if (n.find(L"mchose") != std::wstring::npos) return 4;
+    if (vid == 0x046d) return 0;
+    if (vid == 0x37d7) return 3;
+    if (vid == 0x3434) return 2;
+    if (vid == 0x3837) return 4;
+    return 5;
 }
 
 void CWirelessDeviceBattery::FetchData()
 {
     BatterySnapshot snap;
     char* json = wb_poll_devices_json();
-    if (json == nullptr)
-    {
+    if (!json) {
         snap.available = false;
-        snap.value = L"poll failed";
         snap.tooltip = L"poll failed";
-        snap.name = L"Device";
-        snap.percent = 0;
         PublishSnapshot(std::move(snap));
         return;
     }
     std::string bytes(json);
     wb_free_string(json);
-
     std::wstring wjson = Utf8ToWide(bytes);
+
+    // Split top-level objects of the JSON array.
     std::vector<std::wstring> objs;
     size_t pos = 0;
-    while (true)
-    {
+    while (true) {
         size_t s = wjson.find(L'{', pos);
         if (s == std::wstring::npos) break;
         size_t e = wjson.find(L'}', s);
@@ -285,62 +314,50 @@ void CWirelessDeviceBattery::FetchData()
         pos = e + 1;
     }
 
-    std::wstring result;
-    std::wstring tooltip;
-    bool first = true;
-    for (const auto& obj : objs)
-    {
-        std::wstring name = ExtractString(obj, L"name");
-        bool has_percent = obj.find(L"\"percent\":null") == std::wstring::npos
-            && obj.find(L"\"percent\": null") == std::wstring::npos;
-        int percent = has_percent ? ExtractInt(obj, L"percent") : -1;
-        bool charging = ExtractBool(obj, L"charging");
-        bool asleep = ExtractBool(obj, L"asleep");
-        bool connected = obj.find(L"\"connected\":false") == std::wstring::npos
-            && obj.find(L"\"connected\": false") == std::wstring::npos;
-
-        std::wstring part;
-        if (!has_percent || percent < 0)
-            part = name + L" unknown";
-        else if (asleep || !connected)
-            part = name + L" " + std::to_wstring(percent) + L"% (last known)";
-        else
-            part = name + L" " + std::to_wstring(percent) + L"%";
-        if (charging) part += L" \u26A1";
-
-        if (!result.empty()) result += L", ";
-        result += part;
-        if (!tooltip.empty()) tooltip += L"\n";
-        tooltip += part;
-
-        if (first)
-        {
-            std::wstringstream ss(name);
-            std::wstring w1, w2;
-            ss >> w1 >> w2;
-            snap.name = w1;
-            if (!w2.empty()) snap.name += L" " + w2;
-            snap.percent = (has_percent && percent >= 0) ? percent : 0;
-            snap.available = has_percent && percent >= 0 && connected;
-            snap.asleep = asleep;
-            snap.connected = connected;
-            first = false;
+    for (const auto& obj : objs) {
+        DeviceSnapshot d;
+        d.name = ExtractString(obj, L"name");
+        d.via = ExtractString(obj, L"via");
+        d.key = ExtractString(obj, L"key");
+        d.percent = ExtractInt(obj, L"percent");
+        d.charging = ExtractBool(obj, L"charging");
+        d.asleep = ExtractBool(obj, L"asleep");
+        d.connected = obj.find(L"\"connected\":false") == std::wstring::npos
+                   && obj.find(L"\"connected\": false") == std::wstring::npos;
+        size_t vp = obj.find(L"\"vid\":");
+        unsigned vid = 0;
+        if (vp != std::wstring::npos) {
+            size_t i = vp + 7;
+            while (i < obj.size() && (obj[i] == L' ' || obj[i] == L'\t')) ++i;
+            while (i < obj.size() && obj[i] >= L'0' && obj[i] <= L'9') { vid = vid * 10 + (obj[i] - L'0'); ++i; }
         }
-    }
-    if (result.empty()) result = L"No devices";
-    if (tooltip.empty()) tooltip = result;
+        d.brand = BrandOf(d.name, d.via, vid);
 
-    snap.value = result;
-    if (snap.available)
-        snap.tooltip = snap.name + L" " + std::to_wstring(snap.percent) + L"%"
-            + (snap.asleep || !snap.connected ? L" (last known)" : L"");
-    else
-        snap.tooltip = result;
+        std::wstring line = d.name;
+        if (d.percent < 0) line += L" unknown";
+        else {
+            line += L" " + std::to_wstring(d.percent) + L"%";
+            if (d.asleep || !d.connected) line += L" (last known)";
+        }
+        if (d.charging) line += L" \u26A1";
+        if (!snap.tooltip.empty()) snap.tooltip += L"\n";
+        snap.tooltip += line;
+        snap.devices.push_back(std::move(d));
+    }
+    snap.available = true;
+    {
+        std::lock_guard<std::mutex> lock(m_snapshot_mutex);
+        snap.histories = m_snapshot.histories;   // preserve per-device history
+    }
+    {
+        time_t now = time(nullptr);
+        for (const auto& d : snap.devices)
+            snap.histories[d.key].Add(static_cast<long long>(now), d.percent);
+    }
     PublishSnapshot(std::move(snap));
 }
 
-ITMPlugin* TMPluginGetInstance()
+extern "C" __declspec(dllexport) ITMPlugin* TMPluginGetInstance()
 {
-    AFX_MANAGE_STATE(AfxGetStaticModuleState());
     return &CWirelessDeviceBattery::Instance();
 }
