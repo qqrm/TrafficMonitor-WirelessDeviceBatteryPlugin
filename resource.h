@@ -8,6 +8,10 @@
 #define IDI_ICON1                       104
 #define IDS_PLUGIN_ITEM_NAME            105
 #define IDI_LOGITECH                    106
+#define IDC_DEVICE_LIST                 1001
+#define IDC_SHOW_UNKNOWN                1002
+#define IDC_SHOW_CHARGING               1003
+#define IDC_STATIC_HINT                 1004
 #define IDR_LOGITECH_PNG                107
 
 // Next default values for new objects

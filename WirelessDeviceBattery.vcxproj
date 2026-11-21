@@ -242,7 +242,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="DeviceBrandMasks.h" />
     <ClInclude Include="framework.h" />
+    <ClInclude Include="LogitechMark.h" />
     <ClInclude Include="OptionsDlg.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="resource.h" />
