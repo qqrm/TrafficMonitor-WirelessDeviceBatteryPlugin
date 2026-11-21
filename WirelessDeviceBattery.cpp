@@ -10,6 +10,8 @@
 #include <sstream>
 #include <algorithm>
 #include <fstream>
+#include <ctime>
+
 
 CWirelessDeviceBattery CWirelessDeviceBattery::m_instance;
 
@@ -32,7 +34,9 @@ CWirelessDeviceBattery& CWirelessDeviceBattery::Instance() { return m_instance; 
 
 IPluginItem* CWirelessDeviceBattery::GetItem(int index)
 {
-    if (index < 0 || size_t(index) >= m_items.size()) return nullptr;
+    if (index < 0) return nullptr;
+    size_t n = DeviceCount();
+    if (size_t(index) >= n || size_t(index) >= m_items.size()) return nullptr;
     return &m_items[size_t(index)];
 }
 
